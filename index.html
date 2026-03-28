@@ -1,0 +1,1370 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ระบบตรวจสอบสินค้าหน้าสาขา</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js" defer></script>
+<!-- Firebase (compat SDK) -->
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js" defer></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js" defer></script>
+<style>
+  :root {
+    --primary: #1f3864;
+    --primary-light: #2e75b6;
+    --primary-lighter: #d6e4f7;
+    --accent: #ed7d31;
+    --red-bg: #ffc7ce; --red-fg: #9c0006;
+    --green-bg: #c6efce; --green-fg: #276221;
+    --yellow-bg: #fff2cc; --yellow-fg: #bf8f00;
+    --gray-bg: #f2f7fc; --gray-border: #c9d9ee;
+    --white: #ffffff;
+    --text: #1a1a2e;
+    --radius: 8px;
+    --shadow: 0 2px 8px rgba(31,56,100,.12);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; background: #eef3fb; color: var(--text); font-size: 13px; }
+
+  /* ── Top bar ── */
+  .topbar { background: var(--primary); color: #fff; padding: 10px 20px; display: flex; align-items: center; gap: 12px; }
+  .topbar h1 { font-size: 16px; font-weight: 700; }
+  .topbar .badge { background: var(--accent); color: #fff; border-radius: 12px; padding: 2px 10px; font-size: 11px; }
+  .topbar .file-count { margin-left: auto; font-size: 11px; opacity: .8; }
+
+  /* ── Tabs ── */
+  .tabs { background: var(--primary); display: flex; padding: 0 20px; gap: 2px; }
+  .tab { color: rgba(255,255,255,.65); padding: 9px 18px; cursor: pointer; border-bottom: 3px solid transparent; font-size: 13px; transition: all .2s; }
+  .tab:hover { color: #fff; }
+  .tab.active { color: #fff; border-bottom-color: var(--accent); font-weight: 600; }
+
+  /* ── Layout ── */
+  .page { display: none; padding: 16px 20px; }
+  .page.active { display: block; }
+
+  /* ── Drop zone ── */
+  .dropzone { border: 2px dashed var(--primary-light); border-radius: var(--radius); background: var(--white); padding: 32px; text-align: center; cursor: pointer; transition: all .2s; }
+  .dropzone:hover, .dropzone.drag { border-color: var(--accent); background: #fff8f3; }
+  .dropzone .icon { font-size: 40px; margin-bottom: 8px; }
+  .dropzone p { color: #555; margin: 4px 0; }
+  .dropzone .hint { font-size: 11px; color: #999; margin-top: 6px; }
+  .dropzone input { display: none; }
+
+  /* ── Modal ── */
+  .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 100; display: flex; align-items: center; justify-content: center; }
+  .modal-overlay.hidden { display: none; }
+  .modal { background: #fff; border-radius: 12px; padding: 28px 32px; min-width: 360px; max-width: 480px; box-shadow: 0 8px 32px rgba(0,0,0,.2); }
+  .modal h2 { font-size: 16px; color: var(--primary); margin-bottom: 6px; }
+  .modal .sub { font-size: 12px; color: #888; margin-bottom: 20px; }
+  .modal .file-name { background: var(--gray-bg); border-radius: 6px; padding: 8px 12px; font-size: 13px; color: var(--primary); margin-bottom: 16px; word-break: break-all; }
+  .modal label { font-size: 12px; font-weight: 600; color: #555; text-transform: uppercase; letter-spacing: .4px; display: block; margin-bottom: 6px; }
+  .modal input[type=date] { width: 100%; padding: 9px 12px; border: 1.5px solid var(--gray-border); border-radius: 8px; font-size: 14px; color: var(--text); margin-bottom: 20px; }
+  .modal input[type=date]:focus { outline: none; border-color: var(--primary-light); }
+  .modal .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+
+  /* ── Duplicate dialog ── */
+  .dup-choices { display: flex; flex-direction: column; gap: 10px; margin: 16px 0; }
+  .dup-choice { border: 1.5px solid var(--gray-border); border-radius: 8px; padding: 12px 16px; cursor: pointer; transition: all .15s; }
+  .dup-choice:hover { border-color: var(--primary-light); background: var(--primary-lighter); }
+  .dup-choice.selected { border-color: var(--primary); background: var(--primary-lighter); }
+  .dup-choice strong { font-size: 13px; color: var(--primary); display: block; margin-bottom: 3px; }
+  .dup-choice span { font-size: 11px; color: #777; }
+
+  /* ── Filter bar ── */
+  .filter-bar { background: var(--white); border-radius: var(--radius); padding: 14px 16px; margin-bottom: 14px; box-shadow: var(--shadow); display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+  .filter-group { display: flex; flex-direction: column; gap: 4px; }
+  .filter-group label { font-size: 11px; color: #666; font-weight: 600; text-transform: uppercase; letter-spacing: .4px; }
+  .filter-group select, .filter-group input { padding: 6px 10px; border: 1px solid var(--gray-border); border-radius: 6px; font-size: 13px; color: var(--text); background: #f8fbff; min-width: 150px; }
+  .filter-group select:focus, .filter-group input:focus { outline: none; border-color: var(--primary-light); }
+  /* ── Checkbox chips (multi-select filter) ── */
+  .chip-group { display: flex; flex-wrap: wrap; gap: 5px; padding-top: 2px; }
+  .chip-label { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border: 1.5px solid var(--gray-border); border-radius: 20px; font-size: 12px; font-weight: 600; color: #555; background: #f8fbff; cursor: pointer; transition: all .15s; user-select: none; white-space: nowrap; }
+  .chip-label:hover { border-color: var(--primary-light); color: var(--primary); background: var(--primary-lighter); }
+  .chip-label input[type=checkbox] { display: none; }
+  .chip-label.active { border-color: var(--primary); background: var(--primary); color: #fff; }
+  .chip-label.status-short.active { border-color: #e53e3e; background: #e53e3e; color: #fff; }
+  .chip-label.status-over.active  { border-color: #38a169; background: #38a169; color: #fff; }
+  .chip-label.status-ok.active    { border-color: #3182ce; background: #3182ce; color: #fff; }
+  .btn { padding: 7px 18px; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; transition: all .15s; }
+  .btn-primary { background: var(--primary); color: #fff; }
+  .btn-primary:hover { background: var(--primary-light); }
+  .btn-accent { background: var(--accent); color: #fff; }
+  .btn-accent:hover { opacity: .85; }
+  .btn-ghost { background: transparent; color: var(--primary); border: 1px solid var(--primary); }
+  .btn-ghost:hover { background: var(--primary-lighter); }
+  .btn-sm { padding: 4px 12px; font-size: 12px; }
+
+  /* ── Summary cards ── */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin-bottom: 14px; }
+  .card { background: var(--white); border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow); border-left: 4px solid var(--primary-light); }
+  .card.red { border-left-color: #c00; }
+  .card.green { border-left-color: #276221; }
+  .card.orange { border-left-color: var(--accent); }
+  .card .label { font-size: 11px; color: #777; font-weight: 600; text-transform: uppercase; letter-spacing: .4px; }
+  .card .value { font-size: 22px; font-weight: 700; color: var(--primary); margin: 4px 0 2px; }
+  .card .sub { font-size: 11px; color: #999; }
+
+  /* ── Table ── */
+  .table-wrap { background: var(--white); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+  .table-header { padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--gray-border); }
+  .table-header h3 { font-size: 14px; color: var(--primary); }
+  .table-header .actions { display: flex; gap: 8px; }
+  .tbl-container { overflow-x: auto; max-height: 460px; overflow-y: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  thead th { background: var(--primary); color: #fff; padding: 9px 10px; text-align: center; white-space: nowrap; position: sticky; top: 0; z-index: 2; font-weight: 600; }
+  thead th:first-child { text-align: left; }
+  tbody tr:nth-child(even) { background: var(--gray-bg); }
+  tbody tr:hover { background: var(--primary-lighter); }
+  tbody td { padding: 7px 10px; border-bottom: 1px solid #edf2fa; white-space: nowrap; text-align: right; }
+  tbody td:first-child, tbody td:nth-child(2), tbody td:nth-child(3), tbody td:nth-child(4) { text-align: left; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 600; }
+  .tag-short { background: var(--red-bg); color: var(--red-fg); }
+  .tag-over  { background: var(--green-bg); color: var(--green-fg); }
+  .tag-ok    { background: #e8e8e8; color: #555; }
+  .neg { color: var(--red-fg); font-weight: 600; }
+  .pos { color: var(--green-fg); font-weight: 600; }
+
+  /* ── Compare page ── */
+  .compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 14px; }
+  .compare-box { background: var(--white); border-radius: var(--radius); box-shadow: var(--shadow); }
+  .compare-box .box-header { background: var(--primary); color: #fff; padding: 10px 14px; border-radius: var(--radius) var(--radius) 0 0; font-weight: 600; font-size: 13px; }
+  .compare-box.b { .box-header { background: var(--accent); } }
+  .compare-box .box-body { padding: 12px; }
+
+  /* ── Chart ── */
+  .chart-wrap { background: var(--white); border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px; margin-bottom: 14px; }
+  .chart-wrap h3 { font-size: 13px; color: var(--primary); margin-bottom: 12px; font-weight: 700; }
+
+  /* ── File list ── */
+  .file-list { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+  .file-chip { background: var(--primary-lighter); color: var(--primary); border-radius: 16px; padding: 4px 12px; font-size: 12px; display: flex; align-items: center; gap: 6px; }
+  .file-chip .rm { cursor: pointer; color: #999; font-size: 14px; line-height: 1; }
+  .file-chip .rm:hover { color: #c00; }
+  .file-chip.active-date { background: var(--primary); color: #fff; }
+
+  /* ── Pagination ── */
+  .pagination { display: flex; align-items: center; gap: 6px; padding: 10px 16px; border-top: 1px solid var(--gray-border); justify-content: flex-end; }
+  .pagination span { font-size: 12px; color: #777; }
+  .page-btn { width: 28px; height: 28px; border: 1px solid var(--gray-border); background: #fff; border-radius: 4px; cursor: pointer; font-size: 12px; display: flex; align-items: center; justify-content: center; }
+  .page-btn:hover { background: var(--primary-lighter); }
+  .page-btn.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+
+  /* ── Empty state ── */
+  .empty { text-align: center; padding: 48px 20px; color: #aaa; }
+  .empty .big { font-size: 48px; margin-bottom: 12px; }
+  .empty p { font-size: 14px; }
+
+  /* ── Toast ── */
+  .toast { position: fixed; bottom: 20px; right: 20px; background: var(--primary); color: #fff; padding: 10px 18px; border-radius: 8px; font-size: 13px; box-shadow: 0 4px 16px rgba(0,0,0,.2); opacity: 0; transition: opacity .3s; pointer-events: none; z-index: 999; }
+  .toast.show { opacity: 1; }
+
+  /* ── Scrollbar ── */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: #f0f4fb; }
+  ::-webkit-scrollbar-thumb { background: #b0c4de; border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div>📦</div>
+  <h1>ระบบตรวจสอบสินค้าหน้าสาขา</h1>
+  <span class="badge">BETA</span>
+  <div class="file-count" id="fileCount">ยังไม่มีข้อมูล — กรุณาอัปโหลดไฟล์</div>
+</div>
+
+<div class="tabs">
+  <div class="tab active" onclick="switchTab('upload')">📂 อัปโหลดข้อมูล</div>
+  <div class="tab" onclick="switchTab('summary')">📊 สรุปรายสาขา</div>
+  <div class="tab" onclick="switchTab('detail')">🔍 ค้นหารายตัว</div>
+  <div class="tab" onclick="switchTab('compare')">⚖️ เปรียบเทียบช่วง</div>
+</div>
+
+<!-- ═══════════════════════════════════ UPLOAD ═══ -->
+<div class="page active" id="page-upload">
+  <div class="dropzone" id="dropzone" onclick="document.getElementById('fileInput').click()"
+       ondragover="event.preventDefault();this.classList.add('drag')"
+       ondragleave="this.classList.remove('drag')"
+       ondrop="handleDrop(event)">
+    <div class="icon">📁</div>
+    <p><strong>ลากวางไฟล์ Excel ที่นี่</strong> หรือคลิกเพื่อเลือก</p>
+    <p>รองรับหลายไฟล์พร้อมกัน — ชื่อไฟล์ควรมีวันที่ เช่น <code>24มีค69.xlsx</code></p>
+    <p class="hint">รองรับ .xlsx / .xls — ข้อมูลจะถูกเก็บในหน้าเว็บ ไม่ส่งออก internet</p>
+    <input type="file" id="fileInput" multiple accept=".xlsx,.xls" onchange="handleFiles(this.files)">
+  </div>
+
+  <!-- Batch progress bar -->
+  <div id="batchProgress" style="display:none;margin-top:14px;background:#fff;border-radius:8px;padding:12px 16px;box-shadow:0 2px 8px rgba(31,56,100,.1);flex-direction:column;gap:8px;">
+    <span id="batchText" style="font-size:13px;color:var(--primary);font-weight:600;"></span>
+    <div style="background:#eef3fb;border-radius:4px;height:6px;overflow:hidden;">
+      <div id="batchBar" style="background:var(--accent);height:100%;width:0%;transition:width .3s;border-radius:4px;"></div>
+    </div>
+  </div>
+
+  <div id="fileListWrap" style="margin-top:14px;"></div>
+
+  <div id="uploadStats" style="margin-top:14px;"></div>
+
+  <!-- Cloud sync status -->
+  <div id="cloudStatus" style="margin-top:12px;background:#fff;border-radius:8px;padding:10px 16px;box-shadow:0 2px 8px rgba(31,56,100,.1);display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+    <span id="cloudStatusText" style="font-size:12px;color:#aaa;">☁️ ยังไม่ได้ตั้งค่า Cloud (โหมด Local)</span>
+    <button class="btn btn-ghost btn-sm" onclick="syncFromCloud(true)" id="syncBtn" style="margin-left:auto;" disabled>🔄 Sync จาก Cloud</button>
+  </div>
+
+  <div id="dbStatus" style="margin-top:8px;background:#fff;border-radius:8px;padding:10px 16px;box-shadow:0 2px 8px rgba(31,56,100,.1);display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+    <span id="dbStatusText" style="font-size:12px;color:#666;">💾 กำลังโหลดข้อมูลจากหน่วยความจำ...</span>
+    <button class="btn btn-ghost btn-sm" onclick="clearAllData()" style="color:#c00;border-color:#e0b0b0;margin-left:auto;">🗑 ล้างข้อมูลทั้งหมด</button>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════ SUMMARY ═══ -->
+<div class="page" id="page-summary">
+  <div class="filter-bar">
+    <div class="filter-group">
+      <label>วันที่</label>
+      <select id="s-date"><option value="">— ทุกวัน —</option></select>
+    </div>
+    <div class="filter-group">
+      <label>สาขา</label>
+      <select id="s-branch"><option value="">— ทุกสาขา —</option></select>
+    </div>
+    <div class="filter-group">
+      <label>ประเภทสินค้า</label>
+      <select id="s-label"><option value="">— ทุกประเภท —</option></select>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:auto;">
+      <button class="btn btn-primary" onclick="runSummary()">🔍 ค้นหา</button>
+      <button class="btn btn-ghost" onclick="resetSummary()">↺ รีเซ็ต</button>
+      <button class="btn btn-accent" onclick="exportSummary()">⬇ Export</button>
+    </div>
+  </div>
+  <div class="cards" id="summaryCards"></div>
+  <div class="table-wrap">
+    <div class="table-header">
+      <h3 id="summaryTitle">สรุปรายสาขา</h3>
+      <div class="actions">
+        <span id="summaryCount" style="font-size:12px;color:#999;"></span>
+      </div>
+    </div>
+    <div class="tbl-container">
+      <table id="summaryTable">
+        <thead><tr>
+          <th>สาขา</th><th>ประเภท</th>
+          <th>เริ่มต้นวัน</th><th>รับเข้า</th><th>ผลิตหน้าร้าน</th>
+          <th>ขาย</th><th>เสีย (Waste)</th>
+          <th>เหลือในระบบ</th><th>เหลือจริง</th>
+          <th>ตรวจสอบสินค้า</th><th>สถานะ</th>
+        </tr></thead>
+        <tbody id="summaryBody"></tbody>
+      </table>
+    </div>
+    <div class="pagination" id="summaryPag"></div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════ DETAIL ═══ -->
+<div class="page" id="page-detail">
+  <div class="filter-bar">
+    <div class="filter-group">
+      <label>ค้นหาชื่อสินค้า / รหัส</label>
+      <input type="text" id="d-search" placeholder="พิมพ์ชื่อหรือรหัส..." style="min-width:220px;"
+             oninput="runDetail()" onkeydown="if(event.key==='Enter')runDetail()">
+    </div>
+    <div class="filter-group">
+      <label>วันที่</label>
+      <select id="d-date" onchange="runDetail()"><option value="">— ทุกวัน —</option></select>
+    </div>
+    <div class="filter-group">
+      <label>สาขา</label>
+      <select id="d-branch" onchange="runDetail()"><option value="">— ทุกสาขา —</option></select>
+    </div>
+    <div class="filter-group">
+      <label>ประเภท</label>
+      <div id="d-label-chips" class="chip-group"></div>
+    </div>
+    <div class="filter-group">
+      <label>สถานะ</label>
+      <div class="chip-group">
+        <label class="chip-label status-short" id="chip-short">
+          <input type="checkbox" value="short" onchange="toggleChip(this);runDetail()">⚠ ขาด
+        </label>
+        <label class="chip-label status-over" id="chip-over">
+          <input type="checkbox" value="over" onchange="toggleChip(this);runDetail()">✓ เกิน
+        </label>
+        <label class="chip-label status-ok" id="chip-ok">
+          <input type="checkbox" value="ok" onchange="toggleChip(this);runDetail()">= ตรง
+        </label>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:auto;">
+      <button class="btn btn-ghost" onclick="resetDetail()">↺ รีเซ็ต</button>
+      <button class="btn btn-accent" onclick="exportDetail()">⬇ Export</button>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <div class="table-header">
+      <h3>รายละเอียดรายสินค้า</h3>
+      <span id="detailCount" style="font-size:12px;color:#999;"></span>
+    </div>
+    <div class="tbl-container">
+      <table id="detailTable">
+        <thead><tr>
+          <th>วันที่</th><th>สาขา</th><th>ประเภท</th>
+          <th>ชื่อสินค้า</th><th>รหัส</th><th>หน่วย</th>
+          <th>เริ่มต้นวัน</th><th>รับเข้า</th><th>ผลิต</th>
+          <th>ขาย</th><th>เสีย</th>
+          <th>เหลือในระบบ</th><th>เหลือจริง</th>
+          <th>ตรวจสอบ</th><th>สถานะ</th>
+        </tr></thead>
+        <tbody id="detailBody"></tbody>
+      </table>
+    </div>
+    <div class="pagination" id="detailPag"></div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════ COMPARE ═══ -->
+<div class="page" id="page-compare">
+  <div class="filter-bar">
+    <div class="filter-group">
+      <label>ช่วงที่ 1 (จาก)</label>
+      <input type="date" id="c-from1">
+    </div>
+    <div class="filter-group">
+      <label>ช่วงที่ 1 (ถึง)</label>
+      <input type="date" id="c-to1">
+    </div>
+    <div style="margin-top:auto;color:#999;font-size:18px;">⚖️</div>
+    <div class="filter-group">
+      <label>ช่วงที่ 2 (จาก)</label>
+      <input type="date" id="c-from2">
+    </div>
+    <div class="filter-group">
+      <label>ช่วงที่ 2 (ถึง)</label>
+      <input type="date" id="c-to2">
+    </div>
+    <div class="filter-group">
+      <label>สาขา</label>
+      <select id="c-branch"><option value="">— ทุกสาขา —</option></select>
+    </div>
+    <div class="filter-group">
+      <label>ประเภท</label>
+      <select id="c-label"><option value="">— ทุกประเภท —</option></select>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:auto;">
+      <button class="btn btn-primary" onclick="runCompare()">🔍 เปรียบเทียบ</button>
+      <button class="btn btn-accent" onclick="exportCompare()">⬇ Export</button>
+    </div>
+  </div>
+  <div class="chart-wrap" id="compareChartWrap" style="display:none;">
+    <h3>เปรียบเทียบตรวจสอบสินค้า (ขาด/เกิน) ระหว่างสองช่วง</h3>
+    <canvas id="compareChart" height="80"></canvas>
+  </div>
+  <div class="table-wrap">
+    <div class="table-header"><h3>ผลเปรียบเทียบรายสินค้า</h3>
+      <span id="compareCount" style="font-size:12px;color:#999;"></span>
+    </div>
+    <div class="tbl-container">
+      <table id="compareTable">
+        <thead><tr>
+          <th>สาขา</th><th>ชื่อสินค้า</th><th>หน่วย</th>
+          <th>ตรวจสอบ (ช่วง 1)</th><th>ตรวจสอบ (ช่วง 2)</th><th>เปลี่ยนแปลง</th>
+          <th>เหลือจริง (ช่วง 1)</th><th>เหลือจริง (ช่วง 2)</th>
+        </tr></thead>
+        <tbody id="compareBody"></tbody>
+      </table>
+    </div>
+    <div class="pagination" id="comparePag"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- ═══ Modal: เลือกวันที่ ═══ -->
+<div class="modal-overlay hidden" id="dateModal">
+  <div class="modal">
+    <h2>📅 ระบุวันที่ของข้อมูล</h2>
+    <p class="sub">ระบบตรวจจากชื่อไฟล์ได้ผลดังนี้ — กรุณายืนยันหรือแก้ไขวันที่</p>
+    <div class="file-name" id="modalFileName"></div>
+    <label>วันที่ของข้อมูล</label>
+    <input type="date" id="modalDate">
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="cancelDateModal()">ยกเลิก</button>
+      <button class="btn btn-primary" onclick="confirmDate()">✓ ยืนยัน</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ Modal: วันที่ซ้ำ ═══ -->
+<div class="modal-overlay hidden" id="dupModal">
+  <div class="modal">
+    <h2>⚠️ วันที่ซ้ำ</h2>
+    <p class="sub">มีข้อมูลวันที่ <strong id="dupDate"></strong> อยู่แล้ว ต้องการทำอะไร?</p>
+    <div class="dup-choices">
+      <div class="dup-choice selected" id="dupOptReplace" onclick="selectDupOpt('replace')">
+        <strong>🔄 ลบอันเก่า ใช้อันใหม่</strong>
+        <span>ลบข้อมูลเดิมของวันนี้ทั้งหมดแล้วแทนด้วยไฟล์ใหม่</span>
+      </div>
+      <div class="dup-choice" id="dupOptMerge" onclick="selectDupOpt('merge')">
+        <strong>➕ รวมข้อมูล</strong>
+        <span>เก็บข้อมูลเดิมไว้และเพิ่มรายการจากไฟล์ใหม่เข้าไป (วันเดียวกัน)</span>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="cancelDupModal()">ยกเลิก</button>
+      <button class="btn btn-primary" onclick="confirmDup()">✓ ยืนยัน</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════════
+//  FIREBASE CONFIG
+//  ← ใส่ค่า config จาก Firebase console ตรงนี้
+// ══════════════════════════════════════════════════
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyD6lhagnMewzJnyq0YSNyjimXIwxU47ly8",
+  authDomain: "branch-inventory.firebaseapp.com",
+  projectId: "branch-inventory",
+  storageBucket: "branch-inventory.firebasestorage.app",
+  messagingSenderId: "233165004471",
+  appId: "1:233165004471:web:46e888708a925c3ece7732",
+  measurementId: "G-37KYX3Z0WH"
+};
+
+// ══════════════════════════════════════════════════
+//  STATE
+// ══════════════════════════════════════════════════
+let allData = [];       // flat rows: { _date, _file, สาขา, สินค้าคงคลัง, ... }
+let loadedFiles = {};   // filename -> dateStr
+let pendingFiles = [];  // queue of {buf, fname} waiting for date confirmation
+let pendingParsed = null; // { rows, fname, dateStr } waiting for dup resolution
+let dupChoice = 'replace';
+
+const BRANCHES = ['สามย่านมิตรทาวน์','เซ็นทรัลพระรามสอง','เดอะมอลล์งามวงศ์วาน','วังหลัง','ทรูดิจิทัล','เดอะมอลล์บางแค'];
+const LABELS   = ['สินค้าผลิตหน้าร้าน','ขนมปังโรงงาน','สินค้าโรงงาน','วัตถุดิบ','คลังฝ่ายขาย'];
+
+const COL = {
+  name:   'สินค้าคงคลัง',
+  code:   'รหัสวัตถุดิบ',
+  label:  'ป้ายกำกับ',
+  unit:   'หน่วย',
+  open:   'ปริมาณก่อนวันที่เริ่มต้น',
+  recv:   'เพิ่มจากนำเข้าสินค้าคงคลัง',
+  prod:   'เพิ่มจากการเติมรวดเร็ว',
+  adj:    'เพิ่มจากการตรวจสอบสินค้า',
+  sale:   'รวมจากการตัดสต็อก',
+  xfer:   'ลดจาก Transfer out',
+  waste:  'ลดจาก Waste',
+  end:    'ปริมาณสิ้นสุดวัน',
+  branch: 'สาขา',
+};
+
+// ══════════════════════════════════════════════════
+//  TAB
+// ══════════════════════════════════════════════════
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  event.currentTarget.classList.add('active');
+  document.getElementById('page-' + name).classList.add('active');
+  if (name === 'summary') runSummary();
+  if (name === 'detail')  runDetail();
+}
+
+// ══════════════════════════════════════════════════
+//  FILE HANDLING
+// ══════════════════════════════════════════════════
+function handleDrop(ev) {
+  ev.preventDefault();
+  document.getElementById('dropzone').classList.remove('drag');
+  handleFiles(ev.dataTransfer.files);
+}
+
+let batchTotal = 0;
+
+function handleFiles(files) {
+  const arr = Array.from(files);
+  if (!arr.length) return;
+  let loaded = 0;
+  batchTotal += arr.length;
+  updateBatchProgress();
+  arr.forEach(f => {
+    const reader = new FileReader();
+    reader.onload = e => {
+      pendingFiles.push({ buf: e.target.result, fname: f.name });
+      loaded++;
+      if (loaded === arr.length) processNextPending();
+    };
+    reader.readAsArrayBuffer(f);
+  });
+}
+
+function processNextPending() {
+  if (!pendingFiles.length) {
+    batchTotal = 0;
+    updateBatchProgress();
+    return;
+  }
+  updateBatchProgress();
+  const { buf, fname } = pendingFiles[0];
+  const detected = extractDate(fname);
+  if (detected) {
+    // Date found in filename — auto-proceed without modal
+    pendingFiles.shift();
+    parseExcel(buf, fname, detected);
+  } else {
+    // Date not found — ask user
+    document.getElementById('modalFileName').textContent = fname;
+    document.getElementById('modalDate').value = '';
+    document.getElementById('dateModal').classList.remove('hidden');
+  }
+}
+
+function updateBatchProgress() {
+  const el = document.getElementById('batchProgress');
+  if (!el) return;
+  if (!batchTotal || !pendingFiles.length) { el.style.display = 'none'; return; }
+  const done = batchTotal - pendingFiles.length;
+  el.style.display = 'flex';
+  el.querySelector('#batchText').textContent = `⏳ กำลังโหลด ${done + 1}/${batchTotal} ไฟล์...`;
+  el.querySelector('#batchBar').style.width = `${Math.round((done / batchTotal) * 100)}%`;
+}
+
+function cancelDateModal() {
+  document.getElementById('dateModal').classList.add('hidden');
+  batchTotal = Math.max(0, batchTotal - 1);
+  pendingFiles.shift();
+  processNextPending();
+}
+
+function confirmDate() {
+  const dateStr = document.getElementById('modalDate').value;
+  if (!dateStr) { showToast('⚠ กรุณาเลือกวันที่ก่อน'); return; }
+  document.getElementById('dateModal').classList.add('hidden');
+  const { buf, fname } = pendingFiles[0];
+  pendingFiles.shift();
+  parseExcel(buf, fname, dateStr);
+}
+
+function parseExcel(buf, fname, dateStr) {
+  try {
+    const wb = XLSX.read(buf, { type: 'arraybuffer' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+
+    let hdrRow = -1;
+    for (let i = 0; i < Math.min(raw.length, 5); i++) {
+      if (raw[i].includes('สาขา')) { hdrRow = i; break; }
+    }
+    if (hdrRow < 0) { showToast(`❌ "${fname}" — ไม่พบหัวตาราง`); processNextPending(); return; }
+
+    const headers = raw[hdrRow];
+    const rows = [];
+    for (let i = hdrRow + 1; i < raw.length; i++) {
+      const row = raw[i];
+      if (!row.some(v => v !== '')) continue;
+      const obj = { _date: dateStr, _file: fname };
+      headers.forEach((h, ci) => { if (h) obj[h] = row[ci] ?? ''; });
+      [COL.open, COL.recv, COL.prod, COL.adj, COL.sale, COL.xfer, COL.waste, COL.end].forEach(k => {
+        obj[k] = parseFloat(obj[k]) || 0;
+      });
+      if (obj[COL.branch] && obj[COL.name]) rows.push(obj);
+    }
+
+    // check duplicate date
+    const existingDates = [...new Set(allData.map(r => r._date))];
+    if (existingDates.includes(dateStr)) {
+      if (pendingFiles.length > 0) {
+        // Batch mode — auto-replace without asking
+        allData = allData.filter(r => r._date !== dateStr);
+        Object.keys(loadedFiles).forEach(k => { if (loadedFiles[k] === dateStr) delete loadedFiles[k]; });
+        commitRows(rows, fname, dateStr);
+      } else {
+        // Single file — show duplicate modal
+        pendingParsed = { rows, fname, dateStr };
+        document.getElementById('dupDate').textContent = dateStr;
+        dupChoice = 'replace';
+        document.getElementById('dupOptReplace').classList.add('selected');
+        document.getElementById('dupOptMerge').classList.remove('selected');
+        document.getElementById('dupModal').classList.remove('hidden');
+      }
+    } else {
+      commitRows(rows, fname, dateStr);
+    }
+  } catch(e) {
+    showToast(`❌ "${fname}" — ${e.message}`);
+    processNextPending();
+  }
+}
+
+function selectDupOpt(choice) {
+  dupChoice = choice;
+  document.getElementById('dupOptReplace').classList.toggle('selected', choice === 'replace');
+  document.getElementById('dupOptMerge').classList.toggle('selected', choice === 'merge');
+}
+
+function cancelDupModal() {
+  document.getElementById('dupModal').classList.add('hidden');
+  pendingParsed = null;
+  processNextPending();
+}
+
+function confirmDup() {
+  document.getElementById('dupModal').classList.add('hidden');
+  if (!pendingParsed) return;
+  const { rows, fname, dateStr } = pendingParsed;
+  if (dupChoice === 'replace') {
+    allData = allData.filter(r => r._date !== dateStr);
+    // remove old files for that date
+    Object.keys(loadedFiles).forEach(k => { if (loadedFiles[k] === dateStr) delete loadedFiles[k]; });
+    showToast(`🔄 ลบข้อมูลวันที่ ${dateStr} แล้ว ใช้ไฟล์ใหม่`);
+  } else {
+    showToast(`➕ รวมข้อมูลวันที่ ${dateStr} เรียบร้อย`);
+  }
+  pendingParsed = null;
+  commitRows(rows, fname, dateStr);
+}
+
+function commitRows(rows, fname, dateStr) {
+  allData.push(...rows);
+  loadedFiles[fname] = dateStr;
+  dbSaveDate(dateStr);
+  fbSaveDate(dateStr); // sync to cloud (no-op if not configured)
+  updateUI();
+  showToast(`✅ "${fname}" (${dateStr}) — ${rows.length.toLocaleString()} รายการ`);
+  processNextPending();
+}
+
+function extractDate(fname) {
+  let m;
+  m = fname.match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  m = fname.match(/(\d{1,2})[_\-\/](\d{1,2})[_\-\/](\d{2,4})/);
+  if (m) {
+    const y = m[3].length === 2 ? '25' + m[3] : m[3];
+    return `${y}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`;
+  }
+  const thaiMonths = { 'มค':1,'กพ':2,'มีค':3,'เมย':4,'พค':5,'มิย':6,'กค':7,'สค':8,'กย':9,'ตค':10,'พย':11,'ธค':12,
+                       'ม.ค':1,'ก.พ':2,'มี.ค':3,'เม.ย':4,'พ.ค':5,'มิ.ย':6,'ก.ค':7,'ส.ค':8,'ก.ย':9,'ต.ค':10,'พ.ย':11,'ธ.ค':12 };
+  for (const [abbr, mNum] of Object.entries(thaiMonths)) {
+    const re = new RegExp('(\\d{1,2})' + abbr + '(\\d{2,4})');
+    m = fname.match(re);
+    if (m) {
+      let y = parseInt(m[2]); if (y < 100) y += 2500;
+      const adY = y > 2500 ? y - 543 : y;
+      return `${adY}-${String(mNum).padStart(2,'0')}-${m[1].padStart(2,'0')}`;
+    }
+  }
+  return ''; // ไม่พบ — ให้ user กรอกเอง
+}
+
+function removeFile(fname) {
+  const dateStr = loadedFiles[fname];
+  allData = allData.filter(r => r._file !== fname);
+  delete loadedFiles[fname];
+  const stillHasDate = Object.values(loadedFiles).includes(dateStr);
+  if (dateStr) {
+    if (stillHasDate) { dbSaveDate(dateStr); fbSaveDate(dateStr); }
+    else              { dbDeleteDate(dateStr); fbDeleteDate(dateStr); }
+  }
+  updateUI();
+  showToast(`🗑 ลบ "${fname}" แล้ว`);
+}
+
+function updateUI() {
+  const files = Object.keys(loadedFiles);
+  document.getElementById('fileCount').textContent =
+    files.length ? `${files.length} ไฟล์ | ${allData.length.toLocaleString()} รายการ` : 'ยังไม่มีข้อมูล';
+
+  // file chips
+  const wrap = document.getElementById('fileListWrap');
+  if (files.length) {
+    wrap.innerHTML = '<div class="file-list">' +
+      files.map(f => `<div class="file-chip">📄 ${f}
+        <span class="rm" onclick="removeFile('${f.replace(/'/g,"\\'")}')">✕</span></div>`).join('') +
+      '</div>';
+  } else { wrap.innerHTML = ''; }
+
+  // stats
+  const statsEl = document.getElementById('uploadStats');
+  if (files.length) {
+    const dates = [...new Set(allData.map(r => r._date))].sort();
+    const branches = [...new Set(allData.map(r => r[COL.branch]).filter(Boolean))];
+    statsEl.innerHTML = `<div class="cards">
+      <div class="card"><div class="label">ไฟล์ที่โหลด</div><div class="value">${files.length}</div></div>
+      <div class="card"><div class="label">รายการทั้งหมด</div><div class="value">${allData.length.toLocaleString()}</div></div>
+      <div class="card"><div class="label">วันที่</div><div class="value">${dates.length}</div><div class="sub">${dates[0] || ''} ถึง ${dates[dates.length-1] || ''}</div></div>
+      <div class="card"><div class="label">สาขา</div><div class="value">${branches.length}</div><div class="sub">${branches.join(', ')}</div></div>
+    </div>`;
+  } else { statsEl.innerHTML = ''; }
+
+  // populate filter dropdowns
+  populateFilters();
+  updateDBStatus();
+}
+
+function populateFilters() {
+  const dates    = [...new Set(allData.map(r => r._date).filter(Boolean))].sort();
+  const branches = [...new Set(allData.map(r => r[COL.branch]).filter(Boolean))].sort();
+  const labels   = [...new Set(allData.map(r => r[COL.label]).filter(Boolean))].sort();
+
+  ['s-date','d-date'].forEach(id => {
+    const sel = document.getElementById(id);
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">— ทุกวัน —</option>' +
+      dates.map(d => `<option value="${d}"${d===cur?' selected':''}>${d}</option>`).join('');
+  });
+  ['s-branch','d-branch','c-branch'].forEach(id => {
+    const sel = document.getElementById(id); if (!sel) return;
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">— ทุกสาขา —</option>' +
+      branches.map(b => `<option value="${b}"${b===cur?' selected':''}>${b}</option>`).join('');
+  });
+  // s-label and c-label remain as <select>
+  ['s-label','c-label'].forEach(id => {
+    const sel = document.getElementById(id); if (!sel) return;
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">— ทุกประเภท —</option>' +
+      labels.map(l => `<option value="${l}"${l===cur?' selected':''}>${l}</option>`).join('');
+  });
+  // d-label uses checkbox chips
+  const chipsContainer = document.getElementById('d-label-chips');
+  if (chipsContainer) {
+    // keep existing checked state
+    const checked = new Set(
+      [...chipsContainer.querySelectorAll('input[type=checkbox]:checked')].map(c => c.value)
+    );
+    chipsContainer.innerHTML = labels.map(l =>
+      `<label class="chip-label${checked.has(l)?' active':''}" >
+        <input type="checkbox" value="${escHtml(l)}" onchange="toggleChip(this);runDetail()"${checked.has(l)?' checked':''}>${escHtml(l)}
+      </label>`
+    ).join('');
+  }
+}
+
+// ══════════════════════════════════════════════════
+//  HELPERS
+// ══════════════════════════════════════════════════
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function toggleChip(cb) {
+  cb.closest('.chip-label').classList.toggle('active', cb.checked);
+}
+function fmt(v) {
+  if (v === '' || v == null) return '–';
+  const n = parseFloat(v);
+  if (isNaN(n)) return v;
+  if (n === 0) return '–';
+  return n.toLocaleString('th-TH', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+}
+function fmtDiff(v) {
+  if (!v || v === 0) return '<span class="tag tag-ok">= ตรง</span>';
+  if (v < 0) return `<span class="neg">▼ ${Math.abs(v).toLocaleString('th-TH',{maximumFractionDigits:2})}</span>`;
+  return `<span class="pos">▲ ${v.toLocaleString('th-TH',{maximumFractionDigits:2})}</span>`;
+}
+function statusTag(v) {
+  if (!v || v === 0) return '<span class="tag tag-ok">ตรง</span>';
+  if (v < 0) return `<span class="tag tag-short">⚠ ขาด ${Math.abs(v).toLocaleString('th-TH',{maximumFractionDigits:2})}</span>`;
+  return `<span class="tag tag-over">✓ เกิน ${v.toLocaleString('th-TH',{maximumFractionDigits:2})}</span>`;
+}
+
+let summaryPage = 1, detailPage = 1, comparePage = 1;
+const PAGE_SIZE = 50;
+
+function renderPagination(containerId, total, currentPage, onPage) {
+  const totalPages = Math.ceil(total / PAGE_SIZE);
+  const el = document.getElementById(containerId);
+  if (totalPages <= 1) { el.innerHTML = ''; return; }
+  let html = `<span>${total.toLocaleString()} รายการ | หน้า ${currentPage}/${totalPages}</span>`;
+  if (currentPage > 1) html += `<button class="page-btn" onclick="${onPage}(${currentPage-1})">‹</button>`;
+  const start = Math.max(1, currentPage-2), end = Math.min(totalPages, currentPage+2);
+  for (let p = start; p <= end; p++)
+    html += `<button class="page-btn${p===currentPage?' active':''}" onclick="${onPage}(${p})">${p}</button>`;
+  if (currentPage < totalPages) html += `<button class="page-btn" onclick="${onPage}(${currentPage+1})">›</button>`;
+  el.innerHTML = html;
+}
+
+// ══════════════════════════════════════════════════
+//  SUMMARY
+// ══════════════════════════════════════════════════
+let summaryFiltered = [];
+
+function runSummary(page) {
+  summaryPage = page || 1;
+  if (!allData.length) { document.getElementById('summaryBody').innerHTML = '<tr><td colspan="11" class="empty"><div class="big">📂</div><p>อัปโหลดข้อมูลก่อน</p></td></tr>'; return; }
+
+  const date   = document.getElementById('s-date').value;
+  const branch = document.getElementById('s-branch').value;
+  const label  = document.getElementById('s-label').value;
+
+  let rows = allData.filter(r => r[COL.branch] !== 'ครัวกลาง');
+  if (date)   rows = rows.filter(r => r._date === date);
+  if (branch) rows = rows.filter(r => r[COL.branch] === branch);
+  if (label)  rows = rows.filter(r => r[COL.label] === label);
+
+  // aggregate by branch + label
+  const agg = {};
+  rows.forEach(r => {
+    const key = `${r[COL.branch]}||${r[COL.label]}`;
+    if (!agg[key]) agg[key] = { branch: r[COL.branch], label: r[COL.label], open:0,recv:0,prod:0,sale:0,waste:0,adj:0,end:0,count:0 };
+    const g = agg[key];
+    g.open  += r[COL.open];
+    g.recv  += r[COL.recv];
+    g.prod  += r[COL.prod];
+    g.sale  += r[COL.sale];
+    g.waste += r[COL.waste];
+    g.adj   += r[COL.adj];
+    g.end   += r[COL.end];
+    g.count++;
+  });
+
+  summaryFiltered = Object.values(agg).sort((a,b) => a.branch.localeCompare(b.branch,'th') || a.label.localeCompare(b.label,'th'));
+
+  // cards
+  const totalAdj   = rows.reduce((s,r) => s + r[COL.adj], 0);
+  const totalShort = rows.filter(r => r[COL.adj] < -0.001).length;
+  const totalOver  = rows.filter(r => r[COL.adj] >  0.001).length;
+  const totalEnd   = rows.reduce((s,r) => s + r[COL.end], 0);
+  document.getElementById('summaryCards').innerHTML = `
+    <div class="card"><div class="label">รายการทั้งหมด</div><div class="value">${rows.length.toLocaleString()}</div></div>
+    <div class="card red"><div class="label">รายการขาด</div><div class="value">${totalShort.toLocaleString()}</div></div>
+    <div class="card green"><div class="label">รายการเกิน</div><div class="value">${totalOver.toLocaleString()}</div></div>
+    <div class="card orange"><div class="label">ตรวจสอบสินค้า (รวม)</div><div class="value">${totalAdj >= 0 ? '+' : ''}${totalAdj.toLocaleString('th-TH',{maximumFractionDigits:1})}</div></div>
+    <div class="card"><div class="label">เหลือจริงรวม</div><div class="value">${totalEnd.toLocaleString('th-TH',{maximumFractionDigits:0})}</div></div>`;
+
+  document.getElementById('summaryCount').textContent = `${summaryFiltered.length} กลุ่ม`;
+  document.getElementById('summaryTitle').textContent = `สรุปรายสาขา${date?' วันที่ '+date:''}${branch?' | '+branch:''}`;
+
+  const paged = summaryFiltered.slice((summaryPage-1)*PAGE_SIZE, summaryPage*PAGE_SIZE);
+  document.getElementById('summaryBody').innerHTML = paged.map(r => `
+    <tr>
+      <td><strong>${r.branch}</strong></td>
+      <td>${r.label}</td>
+      <td style="text-align:right">${fmt(r.open)}</td>
+      <td style="text-align:right">${fmt(r.recv)}</td>
+      <td style="text-align:right">${fmt(r.prod)}</td>
+      <td style="text-align:right">${fmt(r.sale)}</td>
+      <td style="text-align:right">${fmt(r.waste)}</td>
+      <td style="text-align:right">${fmt(r.end - r.adj)}</td>
+      <td style="text-align:right"><strong>${fmt(r.end)}</strong></td>
+      <td style="text-align:right">${fmtDiff(r.adj)}</td>
+      <td>${statusTag(r.adj)}</td>
+    </tr>`).join('') || '<tr><td colspan="11" style="text-align:center;padding:24px;color:#aaa;">ไม่มีข้อมูล</td></tr>';
+
+  renderPagination('summaryPag', summaryFiltered.length, summaryPage, 'runSummary');
+}
+
+function resetSummary() {
+  document.getElementById('s-date').value = '';
+  document.getElementById('s-branch').value = '';
+  document.getElementById('s-label').value = '';
+  runSummary();
+}
+
+function exportSummary() {
+  exportToExcel(summaryFiltered.map(r => ({
+    'สาขา': r.branch, 'ประเภท': r.label,
+    'เริ่มต้นวัน': r.open, 'รับเข้า': r.recv, 'ผลิตหน้าร้าน': r.prod,
+    'ขาย': r.sale, 'เสีย': r.waste,
+    'เหลือในระบบ(ก่อนนับ)': r.end - r.adj, 'เหลือจริง': r.end,
+    'ตรวจสอบสินค้า': r.adj, 'สถานะ': r.adj < -0.001 ? 'ขาด' : r.adj > 0.001 ? 'เกิน' : 'ตรง'
+  })), 'สรุปรายสาขา');
+}
+
+// ══════════════════════════════════════════════════
+//  DETAIL
+// ══════════════════════════════════════════════════
+let detailFiltered = [];
+
+function runDetail(page) {
+  detailPage = page || 1;
+  if (!allData.length) return;
+
+  const q      = (document.getElementById('d-search').value || '').toLowerCase();
+  const date   = document.getElementById('d-date').value;
+  const branch = document.getElementById('d-branch').value;
+
+  // multi-select: ประเภท checkboxes
+  const labelChecked = new Set(
+    [...document.querySelectorAll('#d-label-chips input[type=checkbox]:checked')].map(c => c.value)
+  );
+  // multi-select: สถานะ checkboxes
+  const statusChecked = new Set(
+    [...document.querySelectorAll('.chip-label.status-short input, .chip-label.status-over input, .chip-label.status-ok input')]
+      .filter(c => c.checked).map(c => c.value)
+  );
+
+  detailFiltered = allData.filter(r => {
+    if (r[COL.branch] === 'ครัวกลาง') return false;
+    if (date   && r._date !== date)                     return false;
+    if (branch && r[COL.branch] !== branch)             return false;
+    if (labelChecked.size  && !labelChecked.has(r[COL.label]))  return false;
+    if (q && !(r[COL.name]||'').toLowerCase().includes(q) &&
+              !(r[COL.code]||'').toLowerCase().includes(q)) return false;
+    if (statusChecked.size) {
+      const isShort = r[COL.adj] < -0.001;
+      const isOver  = r[COL.adj] >  0.001;
+      const isOk    = !isShort && !isOver;
+      const matched = (statusChecked.has('short') && isShort) ||
+                      (statusChecked.has('over')  && isOver)  ||
+                      (statusChecked.has('ok')    && isOk);
+      if (!matched) return false;
+    }
+    return true;
+  });
+
+  detailFiltered.sort((a,b) => a[COL.adj] - b[COL.adj]);
+  document.getElementById('detailCount').textContent = `${detailFiltered.length.toLocaleString()} รายการ`;
+
+  const paged = detailFiltered.slice((detailPage-1)*PAGE_SIZE, detailPage*PAGE_SIZE);
+  document.getElementById('detailBody').innerHTML = paged.map(r => `
+    <tr>
+      <td>${r._date}</td>
+      <td>${r[COL.branch]}</td>
+      <td>${r[COL.label]}</td>
+      <td style="max-width:200px;white-space:normal">${r[COL.name]}</td>
+      <td style="font-size:10px;color:#999">${r[COL.code]}</td>
+      <td>${r[COL.unit]}</td>
+      <td>${fmt(r[COL.open])}</td>
+      <td>${fmt(r[COL.recv])}</td>
+      <td>${fmt(r[COL.prod])}</td>
+      <td>${fmt(r[COL.sale])}</td>
+      <td>${fmt(r[COL.waste])}</td>
+      <td>${fmt(r[COL.end] - r[COL.adj])}</td>
+      <td><strong>${fmt(r[COL.end])}</strong></td>
+      <td>${fmtDiff(r[COL.adj])}</td>
+      <td>${statusTag(r[COL.adj])}</td>
+    </tr>`).join('') || '<tr><td colspan="15" style="text-align:center;padding:24px;color:#aaa;">ไม่มีข้อมูล</td></tr>';
+
+  renderPagination('detailPag', detailFiltered.length, detailPage, 'runDetail');
+}
+
+function resetDetail() {
+  ['d-search','d-date','d-branch'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  // uncheck all label chips
+  document.querySelectorAll('#d-label-chips input[type=checkbox]').forEach(cb => {
+    cb.checked = false;
+    cb.closest('.chip-label').classList.remove('active');
+  });
+  // uncheck all status chips
+  document.querySelectorAll('.chip-label.status-short input, .chip-label.status-over input, .chip-label.status-ok input').forEach(cb => {
+    cb.checked = false;
+    cb.closest('.chip-label').classList.remove('active');
+  });
+  runDetail();
+}
+
+function exportDetail() {
+  exportToExcel(detailFiltered.map(r => ({
+    'วันที่': r._date, 'สาขา': r[COL.branch], 'ประเภท': r[COL.label],
+    'ชื่อสินค้า': r[COL.name], 'รหัส': r[COL.code], 'หน่วย': r[COL.unit],
+    'เริ่มต้นวัน': r[COL.open], 'รับเข้า': r[COL.recv], 'ผลิต': r[COL.prod],
+    'ขาย': r[COL.sale], 'เสีย': r[COL.waste],
+    'เหลือในระบบ(ก่อนนับ)': r[COL.end] - r[COL.adj],
+    'เหลือจริง': r[COL.end],
+    'ตรวจสอบสินค้า': r[COL.adj],
+    'สถานะ': r[COL.adj] < -0.001 ? 'ขาด' : r[COL.adj] > 0.001 ? 'เกิน' : 'ตรง'
+  })), 'รายละเอียดรายสินค้า');
+}
+
+// ══════════════════════════════════════════════════
+//  COMPARE
+// ══════════════════════════════════════════════════
+let compareFiltered = [];
+let compareChart = null;
+
+function runCompare(page) {
+  comparePage = page || 1;
+  if (!allData.length) return;
+
+  const from1 = document.getElementById('c-from1').value;
+  const to1   = document.getElementById('c-to1').value;
+  const from2 = document.getElementById('c-from2').value;
+  const to2   = document.getElementById('c-to2').value;
+  const branch = document.getElementById('c-branch').value;
+  const label  = document.getElementById('c-label').value;
+
+  function inRange(date, from, to) {
+    if (!from && !to) return true;
+    if (from && date < from) return false;
+    if (to   && date > to)   return false;
+    return true;
+  }
+
+  let base = allData.filter(r => r[COL.branch] !== 'ครัวกลาง');
+  if (branch) base = base.filter(r => r[COL.branch] === branch);
+  if (label)  base = base.filter(r => r[COL.label] === label);
+
+  const rows1 = base.filter(r => inRange(r._date, from1, to1));
+  const rows2 = base.filter(r => inRange(r._date, from2, to2));
+
+  // aggregate by branch + name
+  function agg(rows) {
+    const m = {};
+    rows.forEach(r => {
+      const k = `${r[COL.branch]}||${r[COL.code]||r[COL.name]}`;
+      if (!m[k]) m[k] = { branch: r[COL.branch], name: r[COL.name], unit: r[COL.unit], adj: 0, end: 0 };
+      m[k].adj += r[COL.adj];
+      m[k].end += r[COL.end];
+    });
+    return m;
+  }
+
+  const a1 = agg(rows1), a2 = agg(rows2);
+  const keys = [...new Set([...Object.keys(a1), ...Object.keys(a2)])];
+
+  compareFiltered = keys.map(k => {
+    const r1 = a1[k] || {}, r2 = a2[k] || {};
+    const branch = r1.branch || r2.branch;
+    const name   = r1.name || r2.name;
+    return {
+      branch, name,
+      unit: r1.unit || r2.unit || '',
+      adj1: r1.adj || 0, adj2: r2.adj || 0,
+      end1: r1.end || 0, end2: r2.end || 0,
+      change: (r2.adj || 0) - (r1.adj || 0)
+    };
+  }).sort((a,b) => a.change - b.change);
+
+  document.getElementById('compareCount').textContent = `${compareFiltered.length.toLocaleString()} รายการ`;
+
+  // chart: top branches
+  const branchAdj = {};
+  compareFiltered.forEach(r => {
+    if (!branchAdj[r.branch]) branchAdj[r.branch] = { p1: 0, p2: 0 };
+    branchAdj[r.branch].p1 += r.adj1;
+    branchAdj[r.branch].p2 += r.adj2;
+  });
+  const bNames = Object.keys(branchAdj);
+  if (bNames.length) {
+    document.getElementById('compareChartWrap').style.display = 'block';
+    if (compareChart) compareChart.destroy();
+    compareChart = new Chart(document.getElementById('compareChart'), {
+      type: 'bar',
+      data: {
+        labels: bNames,
+        datasets: [
+          { label: `ช่วง 1 (${from1||'?'}–${to1||'?'})`, data: bNames.map(b => branchAdj[b].p1), backgroundColor: 'rgba(31,56,100,.7)' },
+          { label: `ช่วง 2 (${from2||'?'}–${to2||'?'})`, data: bNames.map(b => branchAdj[b].p2), backgroundColor: 'rgba(237,125,49,.7)' }
+        ]
+      },
+      options: { plugins: { legend: { position: 'top' } }, responsive: true }
+    });
+  }
+
+  const paged = compareFiltered.slice((comparePage-1)*PAGE_SIZE, comparePage*PAGE_SIZE);
+  document.getElementById('compareBody').innerHTML = paged.map(r => `
+    <tr>
+      <td>${r.branch}</td>
+      <td style="max-width:200px;white-space:normal">${r.name}</td>
+      <td>${r.unit}</td>
+      <td>${fmtDiff(r.adj1)}</td>
+      <td>${fmtDiff(r.adj2)}</td>
+      <td>${r.change > 0.001 ? `<span class="pos">▲ ${r.change.toFixed(2)}</span>` : r.change < -0.001 ? `<span class="neg">▼ ${Math.abs(r.change).toFixed(2)}</span>` : '–'}</td>
+      <td>${fmt(r.end1)}</td>
+      <td>${fmt(r.end2)}</td>
+    </tr>`).join('') || '<tr><td colspan="8" style="text-align:center;padding:24px;color:#aaa;">ไม่มีข้อมูล</td></tr>';
+
+  renderPagination('comparePag', compareFiltered.length, comparePage, 'runCompare');
+}
+
+function exportCompare() {
+  exportToExcel(compareFiltered.map(r => ({
+    'สาขา': r.branch, 'ชื่อสินค้า': r.name, 'หน่วย': r.unit,
+    'ตรวจสอบ (ช่วง 1)': r.adj1, 'ตรวจสอบ (ช่วง 2)': r.adj2, 'เปลี่ยนแปลง': r.change,
+    'เหลือจริง (ช่วง 1)': r.end1, 'เหลือจริง (ช่วง 2)': r.end2
+  })), 'เปรียบเทียบช่วง');
+}
+
+
+// ══════════════════════════════════════════════════
+//  EXPORT EXCEL
+// ══════════════════════════════════════════════════
+function exportToExcel(rows, sheetName) {
+  if (!rows.length) { showToast('⚠ ไม่มีข้อมูลที่จะ export'); return; }
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, sheetName);
+  XLSX.writeFile(wb, `${sheetName}_${new Date().toISOString().slice(0,10)}.xlsx`);
+  showToast(`✅ Export "${sheetName}" เสร็จแล้ว`);
+}
+
+// ══════════════════════════════════════════════════
+//  TOAST
+// ══════════════════════════════════════════════════
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 3000);
+}
+
+// ══════════════════════════════════════════════════
+//  INDEXEDDB PERSISTENCE
+// ══════════════════════════════════════════════════
+let db = null;
+
+function initDB() {
+  return new Promise((resolve) => {
+    try {
+      const req = indexedDB.open('branch-dashboard', 1);
+      req.onupgradeneeded = e => {
+        const d = e.target.result;
+        if (!d.objectStoreNames.contains('data')) {
+          d.createObjectStore('data'); // key = dateStr
+        }
+      };
+      req.onsuccess = e => { db = e.target.result; resolve(); };
+      req.onerror = () => resolve(); // fail gracefully — app still works without persistence
+    } catch(e) { resolve(); }
+  });
+}
+
+function dbSaveDate(dateStr) {
+  if (!db || !dateStr) return;
+  try {
+    const dateRows  = allData.filter(r => r._date === dateStr);
+    const dateFiles = Object.entries(loadedFiles)
+      .filter(([, d]) => d === dateStr).map(([f]) => f);
+    const tx = db.transaction('data', 'readwrite');
+    tx.objectStore('data').put({ rows: dateRows, files: dateFiles }, dateStr);
+  } catch(e) { console.warn('DB save error', e); }
+}
+
+function dbDeleteDate(dateStr) {
+  if (!db || !dateStr) return;
+  try {
+    const tx = db.transaction('data', 'readwrite');
+    tx.objectStore('data').delete(dateStr);
+  } catch(e) { console.warn('DB delete error', e); }
+}
+
+function dbLoadAll() {
+  if (!db) return Promise.resolve();
+  return new Promise(resolve => {
+    try {
+      const tx       = db.transaction('data', 'readonly');
+      const store    = tx.objectStore('data');
+      const keysReq  = store.getAllKeys();
+      const valsReq  = store.getAll();
+      let keys, vals;
+      const done = () => {
+        if (keys === undefined || vals === undefined) return;
+        allData = [];
+        loadedFiles = {};
+        keys.forEach((dateStr, i) => {
+          const entry = vals[i] || {};
+          allData.push(...(entry.rows || []));
+          (entry.files || []).forEach(f => { loadedFiles[f] = dateStr; });
+        });
+        resolve();
+      };
+      keysReq.onsuccess = () => { keys = keysReq.result; done(); };
+      valsReq.onsuccess = () => { vals = valsReq.result; done(); };
+      keysReq.onerror = valsReq.onerror = () => resolve();
+    } catch(e) { resolve(); }
+  });
+}
+
+async function clearAllData() {
+  const hasCloud = !!fbDb;
+  const msg = hasCloud
+    ? 'ลบข้อมูลทั้งหมดในระบบ?\n(ลบทั้ง Local และ Cloud — ไม่สามารถกู้คืนได้)'
+    : 'ลบข้อมูลทั้งหมดในระบบ?\n(ไม่สามารถกู้คืนได้)';
+  if (!confirm(msg)) return;
+  // Clear local IndexedDB
+  if (db) {
+    try { const tx = db.transaction('data', 'readwrite'); tx.objectStore('data').clear(); } catch(e) {}
+  }
+  // Clear Firestore (delete chunks sub-collections first, then metadata docs)
+  if (fbDb) {
+    try {
+      const snap = await fbDb.collection('inventory').get();
+      for (const doc of snap.docs) {
+        const chunksSnap = await doc.ref.collection('chunks').get();
+        if (chunksSnap.size > 0) {
+          const batch = fbDb.batch();
+          chunksSnap.forEach(c => batch.delete(c.ref));
+          await batch.commit();
+        }
+        await doc.ref.delete();
+      }
+    } catch(e) { console.warn('fbClear error', e); }
+  }
+  allData = [];
+  loadedFiles = {};
+  updateUI();
+  showToast('🗑 ล้างข้อมูลทั้งหมดแล้ว' + (hasCloud ? ' (Local + Cloud)' : ''));
+}
+
+function updateDBStatus() {
+  const el = document.getElementById('dbStatusText');
+  if (!el) return;
+  if (!allData.length) {
+    el.textContent = '💾 ยังไม่มีข้อมูลในระบบ — อัปโหลดไฟล์เพื่อเริ่มต้น';
+    el.style.color = '#aaa';
+  } else {
+    const dates    = [...new Set(allData.map(r => r._date))].sort();
+    const branches = [...new Set(allData.map(r => r[COL.branch]).filter(Boolean))];
+    el.textContent = `💾 มีข้อมูล ${allData.length.toLocaleString()} รายการ | ${dates.length} วัน (${dates[0]} – ${dates[dates.length-1]}) | ${branches.length} สาขา — บันทึกในเครื่องแล้ว`;
+    el.style.color = '#276221';
+  }
+}
+
+// ══════════════════════════════════════════════════
+//  FIREBASE CLOUD SYNC
+// ══════════════════════════════════════════════════
+let fbDb = null;
+
+// Compact key map — keeps Firestore documents small (< 1MB per day)
+const _EK = {
+  '_file':'_f','สาขา':'_b','สินค้าคงคลัง':'_n','รหัสวัตถุดิบ':'_c',
+  'ป้ายกำกับ':'_l','หน่วย':'_u','ปริมาณก่อนวันที่เริ่มต้น':'_o',
+  'เพิ่มจากนำเข้าสินค้าคงคลัง':'_r','เพิ่มจากการเติมรวดเร็ว':'_p',
+  'เพิ่มจากการตรวจสอบสินค้า':'_a','รวมจากการตัดสต็อก':'_s',
+  'ลดจาก Transfer out':'_x','ลดจาก Waste':'_w','ปริมาณสิ้นสุดวัน':'_e'
+};
+const _DK = Object.fromEntries(Object.entries(_EK).map(([k,v]) => [v,k]));
+function _cRow(r)   { const o={}; for(const[k,v] of Object.entries(r)){if(k==='_date')continue;o[_EK[k]||k]=v;} return o; }
+function _dRow(o,d) { const r={_date:d}; for(const[k,v] of Object.entries(o)){r[_DK[k]||k]=v;} return r; }
+
+function initFirebase() {
+  if (!FIREBASE_CONFIG) return;
+  try {
+    firebase.initializeApp(FIREBASE_CONFIG);
+    fbDb = firebase.firestore();
+    const syncBtn = document.getElementById('syncBtn');
+    if (syncBtn) syncBtn.disabled = false;
+    updateCloudStatus('✅ เชื่อมต่อ Cloud แล้ว — กำลัง sync...', '#276221');
+  } catch(e) {
+    updateCloudStatus('❌ เชื่อมต่อไม่ได้: ' + e.message, '#c00');
+  }
+}
+
+function updateCloudStatus(msg, color) {
+  const el = document.getElementById('cloudStatusText');
+  if (el) { el.textContent = msg; el.style.color = color || '#555'; }
+}
+
+async function fbSaveDate(dateStr) {
+  if (!fbDb || !dateStr) return;
+  try {
+    const allRows = allData.filter(r => r._date === dateStr).map(_cRow);
+    const files   = Object.entries(loadedFiles).filter(([,d])=>d===dateStr).map(([f])=>f);
+    const dateRef = fbDb.collection('inventory').doc(dateStr);
+
+    // Split rows into 500-row chunks — each document stays well under the 1 MB Firestore limit
+    const CHUNK = 500;
+    const chunks = [];
+    for (let i = 0; i < allRows.length; i += CHUNK) chunks.push(allRows.slice(i, i + CHUNK));
+    if (!chunks.length) chunks.push([]); // always write at least one chunk
+
+    // Metadata + chunks in one batch (typically ~10-15 ops, well under the 500-op limit)
+    const batch = fbDb.batch();
+    batch.set(dateRef, {
+      files, rowCount: allRows.length, chunkCount: chunks.length,
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    chunks.forEach((chunk, i) => {
+      batch.set(dateRef.collection('chunks').doc(String(i)), { rows: chunk });
+    });
+    await batch.commit();
+
+    updateCloudStatus(`☁️ Sync ล่าสุด: ${new Date().toLocaleTimeString('th')}`, '#276221');
+  } catch(e) {
+    updateCloudStatus('⚠️ Cloud save ล้มเหลว: ' + e.message, '#c00');
+    console.warn('fbSave error', e);
+  }
+}
+
+async function fbDeleteDate(dateStr) {
+  if (!fbDb || !dateStr) return;
+  try {
+    const dateRef = fbDb.collection('inventory').doc(dateStr);
+    const chunksSnap = await dateRef.collection('chunks').get();
+    const batch = fbDb.batch();
+    chunksSnap.forEach(doc => batch.delete(doc.ref));
+    batch.delete(dateRef);
+    await batch.commit();
+  } catch(e) { console.warn('fbDelete error', e); }
+}
+
+async function syncFromCloud(forceReplace) {
+  if (!fbDb) { showToast('⚠ ยังไม่ได้ตั้งค่า Firebase — ดูคำแนะนำในแท็บอัปโหลด'); return; }
+  try {
+    updateCloudStatus('⏳ กำลัง sync จาก Cloud...', '#888');
+    const snap = await fbDb.collection('inventory').get();
+
+    // Fetch all chunk sub-collections in parallel
+    const dateTasks = snap.docs.map(async doc => {
+      const d = doc.data(), dateStr = doc.id;
+      const chunksSnap = await doc.ref.collection('chunks').get();
+      const rows = [];
+      chunksSnap.forEach(c => rows.push(...(c.data().rows || [])));
+      // Backward compat: old format stored rows directly in the metadata doc
+      if (!chunksSnap.size && Array.isArray(d.rows)) rows.push(...d.rows);
+      return { dateStr, rows, files: d.files || [] };
+    });
+    const dateResults = await Promise.all(dateTasks);
+
+    if (forceReplace) {
+      // Full replace (user explicitly clicked Sync)
+      allData = []; loadedFiles = {};
+      dateResults.forEach(({ dateStr, rows, files }) => {
+        rows.forEach(r => allData.push(_dRow(r, dateStr)));
+        files.forEach(f => { loadedFiles[f] = dateStr; });
+      });
+    } else {
+      // Merge — only add dates from cloud that aren't already in local data
+      const localDates = new Set(allData.map(r => r._date));
+      let newDates = 0;
+      dateResults.forEach(({ dateStr, rows, files }) => {
+        if (!localDates.has(dateStr)) {
+          rows.forEach(r => allData.push(_dRow(r, dateStr)));
+          files.forEach(f => { loadedFiles[f] = dateStr; });
+          newDates++;
+        }
+      });
+      if (!newDates) {
+        updateCloudStatus(`✅ ข้อมูลอัปเดตแล้ว — ${allData.length.toLocaleString()} รายการ (${snap.size} วันใน Cloud)`, '#276221');
+        return;
+      }
+    }
+
+    // Cache locally
+    const dates = [...new Set(allData.map(r => r._date))];
+    for (const ds of dates) dbSaveDate(ds);
+    updateUI();
+    updateCloudStatus(`✅ Sync สำเร็จ — ${allData.length.toLocaleString()} รายการ (${snap.size} วันใน Cloud)`, '#276221');
+    showToast(`☁️ Sync สำเร็จ — ${allData.length.toLocaleString()} รายการ`);
+  } catch(e) {
+    updateCloudStatus('❌ Sync ล้มเหลว — ใช้ข้อมูล Local', '#c00');
+    showToast('❌ Sync ล้มเหลว: ' + e.message);
+    console.error(e);
+  }
+}
+
+// ── Load persisted data on startup ──
+document.addEventListener('DOMContentLoaded', async () => {
+  initFirebase();
+  await initDB();
+  // Step 1: show local cache immediately (fast)
+  await dbLoadAll();
+  if (allData.length) {
+    updateUI();
+    showToast(`💾 โหลด Local ${allData.length.toLocaleString()} รายการ`);
+  } else {
+    updateDBStatus();
+  }
+  // Step 2: sync from cloud in background (updates if newer data exists)
+  if (fbDb) syncFromCloud();
+});
+</script>
+</body>
+</html>
