@@ -1109,6 +1109,7 @@ function showToast(msg) {
 //  INDEXEDDB PERSISTENCE
 // ══════════════════════════════════════════════════
 let db = null;
+const localCloudTs = {};
 
 function initDB() {
   return new Promise((resolve) => {
@@ -1126,14 +1127,16 @@ function initDB() {
   });
 }
 
-function dbSaveDate(dateStr) {
+function dbSaveDate(dateStr, cloudTs) {
   if (!db || !dateStr) return;
   try {
     const dateRows  = allData.filter(r => r._date === dateStr);
     const dateFiles = Object.entries(loadedFiles)
       .filter(([, d]) => d === dateStr).map(([f]) => f);
+    const obj = { rows: dateRows, files: dateFiles };
+    if (cloudTs != null) obj.cloudTs = cloudTs;
     const tx = db.transaction('data', 'readwrite');
-    tx.objectStore('data').put({ rows: dateRows, files: dateFiles }, dateStr);
+    tx.objectStore('data').put(obj, dateStr);
   } catch(e) { console.warn('DB save error', e); }
 }
 
@@ -1162,6 +1165,7 @@ function dbLoadAll() {
           const entry = vals[i] || {};
           allData.push(...(entry.rows || []));
           (entry.files || []).forEach(f => { loadedFiles[f] = dateStr; });
+          if (entry.cloudTs != null) localCloudTs[dateStr] = entry.cloudTs;
         });
         resolve();
       };
@@ -1276,6 +1280,8 @@ async function fbSaveDate(dateStr) {
     });
     await batch.commit();
 
+    try{const m=await dateRef.get();const t=m.data().updatedAt?m.data().updatedAt.toMillis():null;if(t!=null){localCloudTs[dateStr]=t;dbSaveDate(dateStr,t);}}catch(_){}
+
     updateCloudStatus(`☁️ Sync ล่าสุด: ${new Date().toLocaleTimeString('th')}`, '#276221');
   } catch(e) {
     updateCloudStatus('⚠️ Cloud save ล้มเหลว: ' + e.message, '#c00');
@@ -1298,50 +1304,56 @@ async function fbDeleteDate(dateStr) {
 async function syncFromCloud(forceReplace) {
   if (!fbDb) { showToast('⚠ ยังไม่ได้ตั้งค่า Firebase — ดูคำแนะนำในแท็บอัปโหลด'); return; }
   try {
-    updateCloudStatus('⏳ กำลัง sync จาก Cloud...', '#888');
+    updateCloudStatus('⏳ กำลังตรวจสอบข้อมูลใน Cloud...', '#888');
     const snap = await fbDb.collection('inventory').get();
-
-    // Fetch all chunk sub-collections in parallel
-    const dateTasks = snap.docs.map(async doc => {
-      const d = doc.data(), dateStr = doc.id;
-      const chunksSnap = await doc.ref.collection('chunks').get();
-      const rows = [];
-      chunksSnap.forEach(c => rows.push(...(c.data().rows || [])));
-      // Backward compat: old format stored rows directly in the metadata doc
-      if (!chunksSnap.size && Array.isArray(d.rows)) rows.push(...d.rows);
-      return { dateStr, rows, files: d.files || [] };
-    });
-    const dateResults = await Promise.all(dateTasks);
-
+    let docsToFetch;
     if (forceReplace) {
-      // Full replace (user explicitly clicked Sync)
-      allData = []; loadedFiles = {};
-      dateResults.forEach(({ dateStr, rows, files }) => {
-        rows.forEach(r => allData.push(_dRow(r, dateStr)));
-        files.forEach(f => { loadedFiles[f] = dateStr; });
-      });
+      docsToFetch = snap.docs;
     } else {
-      // Merge — only add dates from cloud that aren't already in local data
-      const localDates = new Set(allData.map(r => r._date));
-      let newDates = 0;
-      dateResults.forEach(({ dateStr, rows, files }) => {
-        if (!localDates.has(dateStr)) {
-          rows.forEach(r => allData.push(_dRow(r, dateStr)));
-          files.forEach(f => { loadedFiles[f] = dateStr; });
-          newDates++;
-        }
+      docsToFetch = snap.docs.filter(doc => {
+        const cloudTs = doc.data().updatedAt ? doc.data().updatedAt.toMillis() : null;
+        const localTs = localCloudTs[doc.id] ?? null;
+        return localTs == null || cloudTs == null || cloudTs > localTs;
       });
-      if (!newDates) {
+      if (!docsToFetch.length) {
         updateCloudStatus(`✅ ข้อมูลอัปเดตแล้ว — ${allData.length.toLocaleString()} รายการ (${snap.size} วันใน Cloud)`, '#276221');
         return;
       }
     }
-
-    // Cache locally
-    const dates = [...new Set(allData.map(r => r._date))];
-    for (const ds of dates) dbSaveDate(ds);
+    let done = 0;
+    updateCloudStatus(`⏳ กำลัง sync ${docsToFetch.length}/${snap.size} วัน...`, '#888');
+    const fetchedDates = await Promise.all(docsToFetch.map(async doc => {
+      const d = doc.data(), dateStr = doc.id;
+      const cloudTs = d.updatedAt ? d.updatedAt.toMillis() : null;
+      const chunksSnap = await doc.ref.collection('chunks').get();
+      const rows = [];
+      chunksSnap.forEach(c => rows.push(...(c.data().rows || [])));
+      if (!chunksSnap.size && Array.isArray(d.rows)) rows.push(...d.rows);
+      done++;
+      updateCloudStatus(`⏳ sync ${done}/${docsToFetch.length} วัน...`, '#888');
+      return { dateStr, rows, files: d.files || [], cloudTs };
+    }));
+    if (forceReplace) {
+      allData = []; loadedFiles = {};
+    } else {
+      const updatedSet = new Set(fetchedDates.map(r => r.dateStr));
+      allData = allData.filter(r => !updatedSet.has(r._date));
+      Object.keys(loadedFiles).forEach(f => {
+        if (updatedSet.has(loadedFiles[f])) delete loadedFiles[f];
+      });
+    }
+    fetchedDates.forEach(({ dateStr, rows, files, cloudTs }) => {
+      rows.forEach(r => allData.push(_dRow(r, dateStr)));
+      files.forEach(f => { loadedFiles[f] = dateStr; });
+      if (cloudTs != null) localCloudTs[dateStr] = cloudTs;
+      dbSaveDate(dateStr, cloudTs);
+    });
     updateUI();
-    updateCloudStatus(`✅ Sync สำเร็จ — ${allData.length.toLocaleString()} รายการ (${snap.size} วันใน Cloud)`, '#276221');
+    const skipped = snap.size - docsToFetch.length;
+    const msg = skipped > 0
+      ? `✅ Sync สำเร็จ — ${allData.length.toLocaleString()} รายการ (ข้ามข้อมูลเดิม ${skipped} วัน)`
+      : `✅ Sync สำเร็จ — ${allData.length.toLocaleString()} รายการ (${snap.size} วันใน Cloud)`;
+    updateCloudStatus(msg, '#276221');
     showToast(`☁️ Sync สำเร็จ — ${allData.length.toLocaleString()} รายการ`);
   } catch(e) {
     updateCloudStatus('❌ Sync ล้มเหลว — ใช้ข้อมูล Local', '#c00');
