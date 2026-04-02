@@ -209,7 +209,7 @@
   <!-- Cloud sync status -->
   <div id="cloudStatus" style="margin-top:12px;background:#fff;border-radius:8px;padding:10px 16px;box-shadow:0 2px 8px rgba(31,56,100,.1);display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
     <span id="cloudStatusText" style="font-size:12px;color:#aaa;">☁️ ยังไม่ได้ตั้งค่า Cloud (โหมด Local)</span>
-    <button class="btn btn-ghost btn-sm" onclick="syncFromCloud(true)" id="syncBtn" style="margin-left:auto;" disabled>🔄 Sync จาก Cloud</button>
+    <button class="btn btn-ghost btn-sm" onclick="syncFromCloud(true)" id="syncBtn" style="margin-left:auto;" disabled>🔄 รีเฟรชข้อมูล</button>
   </div>
 
   <div id="dbStatus" style="margin-top:8px;background:#fff;border-radius:8px;padding:10px 16px;box-shadow:0 2px 8px rgba(31,56,100,.1);display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
@@ -676,7 +676,7 @@ function removeFile(fname) {
 function updateUI() {
   const files = Object.keys(loadedFiles);
   document.getElementById('fileCount').textContent =
-    files.length ? `${files.length} ไฟล์ | ${allData.length.toLocaleString()} รายการ` : 'ยังไม่มีข้อมูล';
+    allData.length ? `${allData.length.toLocaleString()} รายการ${files.length ? ` (${files.length} ไฟล์)` : ''}` : 'ยังไม่มีข้อมูล';
 
   // file chips
   const wrap = document.getElementById('fileListWrap');
@@ -689,11 +689,11 @@ function updateUI() {
 
   // stats
   const statsEl = document.getElementById('uploadStats');
-  if (files.length) {
+  if (allData.length) {
     const dates = [...new Set(allData.map(r => r._date))].sort();
     const branches = [...new Set(allData.map(r => r[COL.branch]).filter(Boolean))];
     statsEl.innerHTML = `<div class="cards">
-      <div class="card"><div class="label">ไฟล์ที่โหลด</div><div class="value">${files.length}</div></div>
+      ${files.length ? `<div class="card"><div class="label">ไฟล์ที่โหลด</div><div class="value">${files.length}</div></div>` : ''}
       <div class="card"><div class="label">รายการทั้งหมด</div><div class="value">${allData.length.toLocaleString()}</div></div>
       <div class="card"><div class="label">วันที่</div><div class="value">${dates.length}</div><div class="sub">${dates[0] || ''} ถึง ${dates[dates.length-1] || ''}</div></div>
       <div class="card"><div class="label">สาขา</div><div class="value">${branches.length}</div><div class="sub">${branches.join(', ')}</div></div>
@@ -1245,7 +1245,7 @@ function initFirebase() {
     fbDb = firebase.firestore();
     const syncBtn = document.getElementById('syncBtn');
     if (syncBtn) syncBtn.disabled = false;
-    updateCloudStatus('✅ เชื่อมต่อ Cloud แล้ว — กำลัง sync...', '#276221');
+    updateCloudStatus('✅ เชื่อมต่อ Cloud แล้ว — กำลังโหลดข้อมูล...', '#276221');
   } catch(e) {
     updateCloudStatus('❌ เชื่อมต่อไม่ได้: ' + e.message, '#c00');
   }
@@ -1304,7 +1304,7 @@ async function fbDeleteDate(dateStr) {
 async function syncFromCloud(forceReplace) {
   if (!fbDb) { showToast('⚠ ยังไม่ได้ตั้งค่า Firebase — ดูคำแนะนำในแท็บอัปโหลด'); return; }
   try {
-    updateCloudStatus('⏳ กำลังตรวจสอบข้อมูลใน Cloud...', '#888');
+    updateCloudStatus('⏳ กำลังโหลดข้อมูลจาก Cloud...', '#888');
     const snap = await fbDb.collection('inventory').get();
     let docsToFetch;
     if (forceReplace) {
@@ -1350,14 +1350,12 @@ async function syncFromCloud(forceReplace) {
     });
     updateUI();
     const skipped = snap.size - docsToFetch.length;
-    const msg = skipped > 0
-      ? `✅ Sync สำเร็จ — ${allData.length.toLocaleString()} รายการ (ข้ามข้อมูลเดิม ${skipped} วัน)`
-      : `✅ Sync สำเร็จ — ${allData.length.toLocaleString()} รายการ (${snap.size} วันใน Cloud)`;
+    const msg = `✅ โหลดจาก Cloud สำเร็จ — ${allData.length.toLocaleString()} รายการ (${snap.size} วัน)`;
     updateCloudStatus(msg, '#276221');
-    showToast(`☁️ Sync สำเร็จ — ${allData.length.toLocaleString()} รายการ`);
+    showToast(`☁️ โหลดข้อมูลสำเร็จ — ${allData.length.toLocaleString()} รายการ`);
   } catch(e) {
-    updateCloudStatus('❌ Sync ล้มเหลว — ใช้ข้อมูล Local', '#c00');
-    showToast('❌ Sync ล้มเหลว: ' + e.message);
+    updateCloudStatus('❌ โหลดข้อมูลล้มเหลว — ใช้ข้อมูล Local', '#c00');
+    showToast('❌ โหลดจาก Cloud ไม่สำเร็จ: ' + e.message);
     console.error(e);
   }
 }
@@ -1375,7 +1373,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     updateDBStatus();
   }
   // Step 2: sync from cloud in background (updates if newer data exists)
-  if (fbDb) syncFromCloud();
+  // If local is empty → force full re-download to recover data
+  // If local has data → incremental (only fetch new/changed dates)
+  if (fbDb) syncFromCloud(!allData.length);
 });
 </script>
 </body>
