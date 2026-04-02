@@ -209,7 +209,7 @@
   <!-- Cloud sync status -->
   <div id="cloudStatus" style="margin-top:12px;background:#fff;border-radius:8px;padding:10px 16px;box-shadow:0 2px 8px rgba(31,56,100,.1);display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
     <span id="cloudStatusText" style="font-size:12px;color:#aaa;">☁️ ยังไม่ได้ตั้งค่า Cloud (โหมด Local)</span>
-    <button class="btn btn-ghost btn-sm" onclick="syncFromCloud(true)" id="syncBtn" style="margin-left:auto;" disabled>🔄 รีเฟรชข้อมูล</button>
+    <button class="btn btn-ghost btn-sm" onclick="startRealtimeSync()" id="syncBtn" style="margin-left:auto;" disabled>🔄 เชื่อมต่อใหม่</button>
   </div>
 
   <div id="dbStatus" style="margin-top:8px;background:#fff;border-radius:8px;padding:10px 16px;box-shadow:0 2px 8px rgba(31,56,100,.1);display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
@@ -439,6 +439,7 @@ const FIREBASE_CONFIG = {
 let allData = [];       // flat rows: { _date, _file, สาขา, สินค้าคงคลัง, ... }
 let loadedFiles = {};   // filename -> dateStr
 let pendingFiles = [];  // queue of {buf, fname} waiting for date confirmation
+let _unsubscribe = null; // Firestore real-time listener unsubscribe fn
 let pendingParsed = null; // { rows, fname, dateStr } waiting for dup resolution
 let dupChoice = 'replace';
 
@@ -1246,7 +1247,7 @@ function initFirebase() {
     fbDb = firebase.firestore();
     const syncBtn = document.getElementById('syncBtn');
     if (syncBtn) syncBtn.disabled = false;
-    updateCloudStatus('✅ เชื่อมต่อ Cloud แล้ว — กำลังโหลดข้อมูล...', '#276221');
+    updateCloudStatus('⏳ กำลังเชื่อมต่อ Cloud...', '#888');
   } catch(e) {
     updateCloudStatus('❌ เชื่อมต่อไม่ได้: ' + e.message, '#c00');
   }
@@ -1256,6 +1257,54 @@ function updateCloudStatus(msg, color) {
   const el = document.getElementById('cloudStatusText');
   if (el) { el.textContent = msg; el.style.color = color || '#555'; }
 }
+
+// ── Real-time Firestore listener ────────────────────
+function startRealtimeSync() {
+  if (!fbDb) return;
+  if (_unsubscribe) { _unsubscribe(); _unsubscribe = null; }
+  updateCloudStatus('⏳ กำลังเชื่อมต่อ Real-time...', '#888');
+
+  _unsubscribe = fbDb.collection('inventory').onSnapshot(async snap => {
+    const changes = snap.docChanges();
+    if (!changes.length) return;
+    let anyChange = false;
+
+    await Promise.all(changes.map(async change => {
+      const dateStr = change.doc.id;
+      if (change.type === 'removed') {
+        allData = allData.filter(r => r._date !== dateStr);
+        Object.keys(loadedFiles).forEach(f => { if (loadedFiles[f] === dateStr) delete loadedFiles[f]; });
+        dbDeleteDate(dateStr); delete localCloudTs[dateStr]; anyChange = true; return;
+      }
+      const d = change.doc.data();
+      const cloudTs = d.updatedAt ? d.updatedAt.toMillis() : null;
+      const localTs = localCloudTs[dateStr] ?? null;
+      if (change.type === 'modified' && localTs != null && cloudTs != null && cloudTs <= localTs) return;
+      const chunksSnap = await change.doc.ref.collection('chunks').get();
+      const rows = [];
+      chunksSnap.forEach(c => rows.push(...(c.data().rows || [])));
+      if (!chunksSnap.size && Array.isArray(d.rows)) rows.push(...d.rows);
+      allData = allData.filter(r => r._date !== dateStr);
+      Object.keys(loadedFiles).forEach(f => { if (loadedFiles[f] === dateStr) delete loadedFiles[f]; });
+      rows.forEach(r => allData.push(_dRow(r, dateStr)));
+      (d.files || []).forEach(f => { loadedFiles[f] = dateStr; });
+      if (cloudTs != null) localCloudTs[dateStr] = cloudTs;
+      dbSaveDate(dateStr, cloudTs); anyChange = true;
+    }));
+
+    if (anyChange) {
+      updateUI();
+      const activePage = document.querySelector('.page.active')?.id;
+      if (activePage === 'page-summary') runSummary();
+      else if (activePage === 'page-detail') runDetail();
+    }
+    updateCloudStatus(`✅ Real-time — ${allData.length.toLocaleString()} รายการ (${snap.size} วัน)`, '#276221');
+  }, err => {
+    updateCloudStatus('❌ Real-time ขาดการเชื่อมต่อ: ' + err.message, '#c00');
+    console.error('Firestore listener error', err);
+  });
+}
+
 
 async function fbSaveDate(dateStr) {
   if (!fbDb || !dateStr) return;
@@ -1377,9 +1426,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     updateDBStatus();
   }
   // Step 2: sync from cloud in background (updates if newer data exists)
-  // If local is empty → force full re-download to recover data
-  // If local has data → incremental (only fetch new/changed dates)
-  if (fbDb) syncFromCloud(!allData.length);
+  // เริ่ม real-time listener — อัปเดตอัตโนมัติตลอด session
+  startRealtimeSync();
 });
 </script>
 </body>
