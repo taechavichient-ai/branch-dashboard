@@ -175,14 +175,14 @@
 </div>
 
 <div class="tabs">
-  <div class="tab active" onclick="switchTab('upload')">📂 อัปโหลดข้อมูล</div>
-  <div class="tab" onclick="switchTab('summary')">📊 สรุปรายสาขา</div>
+  <div class="tab" onclick="switchTab('upload')">📂 อัปโหลดข้อมูล</div>
+  <div class="tab active" onclick="switchTab('summary')">📊 สรุปรายสาขา</div>
   <div class="tab" onclick="switchTab('detail')">🔍 ค้นหารายตัว</div>
   <div class="tab" onclick="switchTab('compare')">⚖️ เปรียบเทียบช่วง</div>
 </div>
 
 <!-- ═══════════════════════════════════ UPLOAD ═══ -->
-<div class="page active" id="page-upload">
+<div class="page" id="page-upload">
   <div class="dropzone" id="dropzone" onclick="document.getElementById('fileInput').click()"
        ondragover="event.preventDefault();this.classList.add('drag')"
        ondragleave="this.classList.remove('drag')"
@@ -219,7 +219,7 @@
 </div>
 
 <!-- ═══════════════════════════════════ SUMMARY ═══ -->
-<div class="page" id="page-summary">
+<div class="page active" id="page-summary">
   <div class="filter-bar">
     <div class="filter-group">
       <label>วันที่</label>
@@ -464,10 +464,11 @@ const COL = {
 // ══════════════════════════════════════════════════
 //  TAB
 // ══════════════════════════════════════════════════
+const _TAB_NAMES = ['upload','summary','detail','compare'];
 function switchTab(name) {
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  const tabs = document.querySelectorAll('.tab');
+  tabs.forEach((t, i) => t.classList.toggle('active', _TAB_NAMES[i] === name));
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  event.currentTarget.classList.add('active');
   document.getElementById('page-' + name).classList.add('active');
   if (name === 'summary') runSummary();
   if (name === 'detail')  runDetail();
@@ -1349,7 +1350,10 @@ async function syncFromCloud(forceReplace) {
       dbSaveDate(dateStr, cloudTs);
     });
     updateUI();
-    const skipped = snap.size - docsToFetch.length;
+    // Auto-refresh whichever report tab is currently visible
+    const activePage = document.querySelector('.page.active')?.id;
+    if (activePage === 'page-summary') runSummary();
+    else if (activePage === 'page-detail') runDetail();
     const msg = `✅ โหลดจาก Cloud สำเร็จ — ${allData.length.toLocaleString()} รายการ (${snap.size} วัน)`;
     updateCloudStatus(msg, '#276221');
     showToast(`☁️ โหลดข้อมูลสำเร็จ — ${allData.length.toLocaleString()} รายการ`);
@@ -1368,7 +1372,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   await dbLoadAll();
   if (allData.length) {
     updateUI();
-    showToast(`💾 โหลด Local ${allData.length.toLocaleString()} รายการ`);
+    runSummary();
   } else {
     updateDBStatus();
   }
