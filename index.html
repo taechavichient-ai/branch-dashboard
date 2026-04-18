@@ -440,6 +440,8 @@ let allData = [];       // flat rows: { _date, _file, สาขา, สินค
 let loadedFiles = {};   // filename -> dateStr
 let pendingFiles = [];  // queue of {buf, fname} waiting for date confirmation
 let _unsubscribe = null; // Firestore real-time listener unsubscribe fn
+const availableDates = {};
+const cachedDates = new Set();
 let pendingParsed = null; // { rows, fname, dateStr } waiting for dup resolution
 let dupChoice = 'replace';
 
@@ -708,7 +710,9 @@ function updateUI() {
 }
 
 function populateFilters() {
-  const dates    = [...new Set(allData.map(r => r._date).filter(Boolean))].sort();
+  const dates = Object.keys(availableDates).length
+    ? Object.keys(availableDates).sort()
+    : [...new Set(allData.map(r => r._date).filter(Boolean))].sort();
   const branches = [...new Set(allData.map(r => r[COL.branch]).filter(Boolean))].sort();
   const labels   = [...new Set(allData.map(r => r[COL.label]).filter(Boolean))].sort();
 
@@ -794,16 +798,19 @@ function renderPagination(containerId, total, currentPage, onPage) {
 // ══════════════════════════════════════════════════
 let summaryFiltered = [];
 
-function runSummary(page) {
+async function runSummary(page) {
   summaryPage = page || 1;
-  if (!allData.length) { document.getElementById('summaryBody').innerHTML = '<tr><td colspan="11" class="empty"><div class="big">📂</div><p>อัปโหลดข้อมูลก่อน</p></td></tr>'; return; }
-
-  const date   = document.getElementById('s-date').value;
+  const date = document.getElementById('s-date').value;
+  if (date && !cachedDates.has(date)) {
+    document.getElementById('summaryBody').innerHTML = '<tr><td colspan="11" class="empty"><div class="big">⏳</div><p>กำลังโหลดข้อมูล...</p></td></tr>';
+    await loadDateData(date);
+  }
+  const viewData = date ? allData.filter(r => r._date === date) : allData;
+  if (!viewData.length) { document.getElementById('summaryBody').innerHTML = '<tr><td colspan="11" class="empty"><div class="big">📂</div><p>เลือกวันที่เพื่อดูรายงาน</p></td></tr>'; return; }
   const branch = document.getElementById('s-branch').value;
   const label  = document.getElementById('s-label').value;
 
-  let rows = allData.filter(r => r[COL.branch] !== 'ครัวกลาง');
-  if (date)   rows = rows.filter(r => r._date === date);
+  let rows = viewData.filter(r => r[COL.branch] !== 'ครัวกลาง');
   if (branch) rows = rows.filter(r => r[COL.branch] === branch);
   if (label)  rows = rows.filter(r => r[COL.label] === label);
 
@@ -881,12 +888,16 @@ function exportSummary() {
 // ══════════════════════════════════════════════════
 let detailFiltered = [];
 
-function runDetail(page) {
+async function runDetail(page) {
   detailPage = page || 1;
+  const date = document.getElementById('d-date').value;
+  if (date && !cachedDates.has(date)) {
+    document.getElementById('detailBody').innerHTML = '<tr><td colspan="15" class="empty"><div class="big">⏳</div><p>กำลังโหลดข้อมูล...</p></td></tr>';
+    await loadDateData(date);
+  }
   if (!allData.length) return;
 
   const q      = (document.getElementById('d-search').value || '').toLowerCase();
-  const date   = document.getElementById('d-date').value;
   const branch = document.getElementById('d-branch').value;
 
   // multi-select: ประเภท checkboxes
@@ -1258,48 +1269,43 @@ function updateCloudStatus(msg, color) {
   if (el) { el.textContent = msg; el.style.color = color || '#555'; }
 }
 
-// ── Real-time Firestore listener ────────────────────
+// ── Real-time Firestore listener (metadata only — no chunk download) ──
 function startRealtimeSync() {
   if (!fbDb) return;
   if (_unsubscribe) { _unsubscribe(); _unsubscribe = null; }
   updateCloudStatus('⏳ กำลังเชื่อมต่อ Real-time...', '#888');
-
-  _unsubscribe = fbDb.collection('inventory').onSnapshot(async snap => {
-    const changes = snap.docChanges();
-    if (!changes.length) return;
-    let anyChange = false;
-
-    await Promise.all(changes.map(async change => {
+  _unsubscribe = fbDb.collection('inventory').onSnapshot(snap => {
+    snap.docChanges().forEach(change => {
       const dateStr = change.doc.id;
       if (change.type === 'removed') {
+        delete availableDates[dateStr]; cachedDates.delete(dateStr);
         allData = allData.filter(r => r._date !== dateStr);
         Object.keys(loadedFiles).forEach(f => { if (loadedFiles[f] === dateStr) delete loadedFiles[f]; });
-        dbDeleteDate(dateStr); delete localCloudTs[dateStr]; anyChange = true; return;
+        dbDeleteDate(dateStr);
+      } else {
+        const d = change.doc.data();
+        const cloudTs = d.updatedAt ? d.updatedAt.toMillis() : null;
+        const prevTs = availableDates[dateStr]?.ts ?? null;
+        availableDates[dateStr] = { files: d.files || [], rowCount: d.rowCount || 0, ts: cloudTs };
+        if (change.type === 'modified' && cachedDates.has(dateStr) && prevTs && cloudTs && cloudTs > prevTs) {
+          cachedDates.delete(dateStr);
+          allData = allData.filter(r => r._date !== dateStr);
+          Object.keys(loadedFiles).forEach(f => { if (loadedFiles[f] === dateStr) delete loadedFiles[f]; });
+          const ap = document.querySelector('.page.active')?.id;
+          const cur = document.getElementById(ap === 'page-summary' ? 's-date' : 'd-date')?.value;
+          if (cur === dateStr) loadDateData(dateStr).then(() => { if (ap === 'page-summary') runSummary(); else runDetail(); });
+        }
       }
-      const d = change.doc.data();
-      const cloudTs = d.updatedAt ? d.updatedAt.toMillis() : null;
-      const localTs = localCloudTs[dateStr] ?? null;
-      // ข้ามถ้ามีข้อมูลอัปเดตแล้ว (ทั้ง added และ modified) — ป้องกันโหลดซ้ำทุกครั้งที่เปิดหน้า
-      if (localTs != null && cloudTs != null && cloudTs <= localTs) return;
-      const chunksSnap = await change.doc.ref.collection('chunks').get();
-      const rows = [];
-      chunksSnap.forEach(c => rows.push(...(c.data().rows || [])));
-      if (!chunksSnap.size && Array.isArray(d.rows)) rows.push(...d.rows);
-      allData = allData.filter(r => r._date !== dateStr);
-      Object.keys(loadedFiles).forEach(f => { if (loadedFiles[f] === dateStr) delete loadedFiles[f]; });
-      rows.forEach(r => allData.push(_dRow(r, dateStr)));
-      (d.files || []).forEach(f => { loadedFiles[f] = dateStr; });
-      if (cloudTs != null) localCloudTs[dateStr] = cloudTs;
-      dbSaveDate(dateStr, cloudTs); anyChange = true;
-    }));
-
-    if (anyChange) {
-      updateUI();
-      const activePage = document.querySelector('.page.active')?.id;
-      if (activePage === 'page-summary') runSummary();
-      else if (activePage === 'page-detail') runDetail();
-    }
-    updateCloudStatus(`✅ Real-time — ${allData.length.toLocaleString()} รายการ (${snap.size} วัน)`, '#276221');
+    });
+    const dates = Object.keys(availableDates).sort();
+    ['s-date','d-date'].forEach(id => {
+      const sel = document.getElementById(id); if (!sel) return;
+      const cur = sel.value;
+      sel.innerHTML = '<option value="">— ทุกวัน —</option>' + dates.map(d => `<option value="${d}"${d===cur?' selected':''}>${d}</option>`).join('');
+    });
+    const totalRows = Object.values(availableDates).reduce((s,v) => s+(v.rowCount||0), 0);
+    updateCloudStatus(`✅ Real-time — ${totalRows.toLocaleString()} รายการ (${dates.length} วัน)`, '#276221');
+    updateUI();
   }, err => {
     updateCloudStatus('❌ Real-time ขาดการเชื่อมต่อ: ' + err.message, '#c00');
     console.error('Firestore listener error', err);
@@ -1307,6 +1313,32 @@ function startRealtimeSync() {
 }
 
 
+async function loadDateData(dateStr) {
+  if (!dateStr || !fbDb || cachedDates.has(dateStr)) return;
+  updateCloudStatus('⏳ กำลังโหลด ' + dateStr + '...', '#888');
+  try {
+    const doc = await fbDb.collection('inventory').doc(dateStr).get();
+    if (!doc.exists) { cachedDates.add(dateStr); return; }
+    const d = doc.data();
+    const chunksSnap = await doc.ref.collection('chunks').get();
+    const rows = [];
+    chunksSnap.forEach(c => rows.push(...(c.data().rows || [])));
+    if (!chunksSnap.size && Array.isArray(d.rows)) rows.push(...d.rows);
+    allData = allData.filter(r => r._date !== dateStr);
+    Object.keys(loadedFiles).forEach(f => { if (loadedFiles[f] === dateStr) delete loadedFiles[f]; });
+    rows.forEach(r => allData.push(_dRow(r, dateStr)));
+    (d.files || []).forEach(f => { loadedFiles[f] = dateStr; });
+    const cloudTs = d.updatedAt ? d.updatedAt.toMillis() : null;
+    if (cloudTs) localCloudTs[dateStr] = cloudTs;
+    dbSaveDate(dateStr, cloudTs);
+    cachedDates.add(dateStr);
+    const totalRows = Object.values(availableDates).reduce((s, v) => s + (v.rowCount || 0), 0);
+    updateCloudStatus('✅ Real-time — ' + totalRows.toLocaleString() + ' รายการ (' + Object.keys(availableDates).length + ' วัน)', '#276221');
+  } catch(e) {
+    updateCloudStatus('⚠️ โหลด ' + dateStr + ' ล้มเหลว: ' + e.message, '#c00');
+    console.warn('loadDateData error', e);
+  }
+}
 async function fbSaveDate(dateStr) {
   if (!fbDb || !dateStr) return;
   try {
