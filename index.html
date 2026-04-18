@@ -1279,7 +1279,8 @@ function startRealtimeSync() {
       const d = change.doc.data();
       const cloudTs = d.updatedAt ? d.updatedAt.toMillis() : null;
       const localTs = localCloudTs[dateStr] ?? null;
-      if (change.type === 'modified' && localTs != null && cloudTs != null && cloudTs <= localTs) return;
+      // ข้ามถ้ามีข้อมูลอัปเดตแล้ว (ทั้ง added และ modified) — ป้องกันโหลดซ้ำทุกครั้งที่เปิดหน้า
+      if (localTs != null && cloudTs != null && cloudTs <= localTs) return;
       const chunksSnap = await change.doc.ref.collection('chunks').get();
       const rows = [];
       chunksSnap.forEach(c => rows.push(...(c.data().rows || [])));
